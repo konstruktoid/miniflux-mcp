@@ -1,0 +1,87 @@
+"""Network (streamable-http) transport, gated behind a bearer-token check.
+
+stdio has no equivalent of this module: a local subprocess is already
+scoped to whoever can run it. Exposing this server over HTTP instead means
+anyone who can reach the port can read the Miniflux account's feeds and
+entries, so every request here must present the same Miniflux API token
+this server uses, as an `Authorization: Bearer <token>` header, checked in
+constant time. There is no separate app-level secret to manage.
+"""
+
+from __future__ import annotations
+
+import hmac
+import logging
+
+from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
+from starlette.applications import Starlette
+from starlette.datastructures import Headers
+from starlette.responses import PlainTextResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from .config import TransportSettings, is_loopback_host
+
+logger = logging.getLogger(__name__)
+
+
+class BearerTokenMiddleware:
+    """Reject any HTTP request that doesn't carry the configured Miniflux token."""
+
+    def __init__(self, app: ASGIApp, expected_token: str) -> None:
+        self._app = app
+        self._expected_token = expected_token.encode("utf-8")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        if not self._is_authorized(Headers(scope=scope).get("authorization")):
+            logger.warning("Rejected unauthenticated request to %s", scope.get("path"))
+            response = PlainTextResponse("Unauthorized", status_code=401)
+            await response(scope, receive, send)
+            return
+
+        await self._app(scope, receive, send)
+
+    def _is_authorized(self, header_value: str | None) -> bool:
+        if not header_value or not header_value.startswith("Bearer "):
+            return False
+        presented = header_value.removeprefix("Bearer ").strip().encode("utf-8")
+        return hmac.compare_digest(presented, self._expected_token)
+
+
+def transport_security_for(host: str, port: int) -> TransportSecuritySettings:
+    """Decide Host-header allowlisting for a given bind address.
+
+    Host-header allowlisting only works for a fixed, known bind address; a
+    deliberately remote-exposed server can be reached by any address that
+    routes to it, so the bearer token is the real control in that case.
+    """
+    if not is_loopback_host(host):
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=False, allowed_hosts=[], allowed_origins=[]
+        )
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[f"{host}:{port}", f"localhost:{port}"],
+        allowed_origins=[],
+    )
+
+
+def build_app(
+    mcp: MCPServer, transport: TransportSettings, api_token: str
+) -> Starlette:
+    """Build the Starlette app for the http transport, auth middleware included."""
+    security = transport_security_for(transport.host, transport.port)
+    app = mcp.streamable_http_app(host=transport.host, transport_security=security)
+    app.add_middleware(BearerTokenMiddleware, expected_token=api_token)
+    return app
+
+
+def run_http(mcp: MCPServer, transport: TransportSettings, api_token: str) -> None:
+    import uvicorn
+
+    app = build_app(mcp, transport, api_token)
+    uvicorn.run(app, host=transport.host, port=transport.port, log_level="info")
