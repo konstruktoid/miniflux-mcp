@@ -25,8 +25,9 @@ All tools are registered with `read_only_hint=True` / `destructive_hint=False`
 MCP annotations so a compliant client can show that up front.
 
 `list_entries` follows the Miniflux 2.3 API: `status` is `unread` or `read`
-(the old `removed` status no longer exists), `tags` matches entries carrying
-the given tags, and `order` also accepts `changed_at` and `created_at`.
+(the old `removed` status no longer exists); `tags` takes 1–20 tags and
+matches only entries carrying *all* of them, case-insensitively; `order`
+also accepts `changed_at` and `created_at`; `limit` is 1–250 (default 20).
 Feeds and entries include the `language` field added in 2.3.3.
 
 ## Environment variables
@@ -39,6 +40,10 @@ Feeds and entries include the `language` field added in 2.3.3.
 | `MINIFLUX_MCP_HOST` | `127.0.0.1` | Bind host, `http` transport only. |
 | `MINIFLUX_MCP_PORT` | `8000` | Bind port, `http` transport only. |
 | `MINIFLUX_MCP_ALLOW_REMOTE` | unset | Must be `1` to bind a non-loopback `MINIFLUX_MCP_HOST`. |
+| `XDG_CONFIG_HOME` | `~/.config` | Base directory for the config file, read as `$XDG_CONFIG_HOME/miniflux-mcp/miniflux-mcp.conf`. |
+
+The Miniflux request timeout (10 s) and response size cap (10 MiB) are fixed
+in code, not configurable.
 
 ## 1. Get a Miniflux API token
 
@@ -67,11 +72,14 @@ MINIFLUX_BASE_URL=http://localhost:8080
 MINIFLUX_API_TOKEN=replace-with-a-real-miniflux-api-token
 ```
 
-`# comments` and blank lines are allowed. This file lives outside the
-repo, so there's nothing to `.gitignore` here — never copy it into the
-project directory, and don't paste the token into an issue, chat, or log.
-The server refuses to read this file if it's readable by anyone but its
-owner (`ConfigError` naming the exact `chmod` to run), so a `chmod 600`
+One `KEY=VALUE` per line. `# comments`, blank lines, and spaces around `=`
+are allowed; a value wrapped in matching single or double quotes has them
+stripped; lines without `=` and unknown keys are ignored. This file lives
+outside the repo, so there's nothing to `.gitignore` here — never copy it
+into the project directory, and don't paste the token into an issue, chat,
+or log. The server refuses to read this file unless it is a regular file
+owned by the user running the server with no group or other permission
+bits (`ConfigError` naming the exact `chmod` to run), so a permissions
 mistake fails loudly instead of silently leaking the token to other local
 users.
 
@@ -89,24 +97,33 @@ users via `ps`), and never inside a URL.
 
 ## 3. Install and run
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.12 or newer, and a
+Miniflux 2.3.4 server.
 
 ```sh
 uv sync
 uv run miniflux-mcp
 ```
 
-That starts the server speaking MCP over stdio and, with a real token in
-`~/.config/miniflux-mcp/miniflux-mcp.conf`, is a good sanity check before
-wiring it into a client — it should hang waiting for MCP requests on
-stdin rather than exit with an error. Ctrl-C to stop.
+That starts the server speaking MCP over stdio; it waits for MCP requests
+on stdin. Ctrl-C to stop. Over stdio the configuration is only read on the
+first tool call, so a missing or unsafe config file does not stop it from
+starting. To check the configuration up front, without printing the token:
+
+```sh
+uv run python -c 'from miniflux_mcp.config import load_settings; print(load_settings().base_url)'
+```
+
+This prints your Miniflux URL, or the `ConfigError` explaining what is
+wrong. Once a client is connected, the `get_server_version` tool confirms
+the token works end to end.
 
 ## 4. Point an MCP client at it
 
 ### Claude Desktop / Claude Code
 
-Add to `claude_desktop_config.json` (Claude Desktop) or `.mcp.json`
-(Claude Code project config):
+Add to `claude_desktop_config.json` (Claude Desktop) or a project's
+`.mcp.json` (Claude Code, shared with everyone who uses the project):
 
 ```json
 {
@@ -119,11 +136,16 @@ Add to `claude_desktop_config.json` (Claude Desktop) or `.mcp.json`
 }
 ```
 
-Equivalently, with the Claude Code CLI:
+Or with the Claude Code CLI, which by default registers it for you only,
+in the current project (`--scope user` for all your projects, `--scope
+project` to write `.mcp.json` instead):
 
 ```sh
 claude mcp add miniflux -- uv run --directory /path/to/miniflux-mcp miniflux-mcp
 ```
+
+After pulling a new version of this repository, reconnect the server
+(`/mcp` in Claude Code) so the client starts the updated code.
 
 Either way, the client config contains no secret at all — the token
 comes from `~/.config/miniflux-mcp/miniflux-mcp.conf` on whatever machine
@@ -152,7 +174,9 @@ This binds `127.0.0.1:8000` by default and **requires every request to
 carry the same Miniflux API token** as an `Authorization: Bearer <token>`
 header — there's no separate secret to generate or manage, and no request
 without a matching token reaches any tool. A request with a missing or
-wrong token gets `401` before any Miniflux call is made.
+wrong token gets `401` (a WebSocket is closed with code `1008`) before any
+Miniflux call is made. In this mode the configuration is read at startup,
+so a missing or unsafe config file stops the server immediately.
 
 To actually reach it from another machine, bind a non-loopback host and
 explicitly opt in:
@@ -217,7 +241,8 @@ Once connected, ask the model things like:
 - "Search my feeds for anything about Rust."
   → `list_entries` with `search=Rust`
 - "Show entries tagged security, newest first by when Miniflux fetched them."
-  → `list_entries` with `tags=["security"]`, `order=created_at`
+  → `list_entries` with `tags=["security"]`, `order=created_at` (tag
+  matching ignores case, so this also finds entries tagged `Security`)
 - "Get the full text of entry 1370."
   → `get_entry` with `entry_id=1370`
 
@@ -232,10 +257,11 @@ Once connected, ask the model things like:
   MCP client cannot redirect requests or exfiltrate the token through a
   tool call.
 - **The config file is refused unless it is a private regular file.** It
-  must be owned by the user running the server and not readable by anyone
-  else; a `chmod` other than `600`/`400` raises a startup error naming the
-  exact command to fix it. A directory, FIFO, or other special file at that
-  path is rejected without blocking, rather than silently loading a token
+  must be owned by the user running the server and have no group or other
+  permission bits (for example `600` or `400`); anything else raises a
+  `ConfigError` naming the exact command to fix it. A directory, FIFO, or
+  other special file at that path is rejected without blocking, rather
+  than silently loading a token
   other local users could read or plant.
 - **`http://` is only accepted for loopback hosts** (`localhost`,
   `127.0.0.1`, `::1`). Anything else must use `https://`. Credentials
@@ -243,11 +269,12 @@ Once connected, ask the model things like:
 - **Redirects are never followed.** A compromised or misconfigured Miniflux
   instance returning a `3xx` is treated as an error, not a hop to a
   different host (which would otherwise still carry the auth token).
-- **Responses are size-bounded** (10 MiB by default) and streamed, so a
-  single huge response can't exhaust memory.
+- **Responses are size-bounded** (10 MiB) and streamed, so a single huge
+  response can't exhaust memory.
 - **Every tool input is validated** at the MCP boundary via `pydantic`
   constraints (`Literal` enums for `status`/`order`/`direction`, `ge=1`
-  bounds on IDs, bounded `limit`/`offset`) before any HTTP request is made.
+  bounds on IDs, bounded `limit`/`offset`, length limits on `search` and on
+  each of at most 20 `tags`) before any HTTP request is made.
 - **Errors never echo the token or request headers.** All error messages
   are hand-written; the underlying `httpx` exception text is never passed
   through verbatim. The in-memory `Settings` object also excludes the
@@ -262,7 +289,10 @@ Once connected, ask the model things like:
   `hmac.compare_digest` (constant-time, so a wrong guess can't be narrowed
   down by response timing). This check runs in its own middleware, in
   front of the MCP protocol handling itself, so an unauthenticated request
-  never reaches a tool.
+  never reaches a tool. It fails closed: HTTP, WebSocket, and any other
+  connection type all need the token, and only the server's own
+  startup/shutdown (ASGI lifespan) events bypass it. Rejected requests are
+  logged with the path escaped, so a crafted path can't forge log lines.
 - **Binding a non-loopback host requires an explicit, separate opt-in**
   (`MINIFLUX_MCP_ALLOW_REMOTE=1`) on top of the `HOST` override, so
   changing one setting can't silently expose the server.
@@ -277,11 +307,11 @@ Once connected, ask the model things like:
   whatever RSS/Atom feeds the account is subscribed to. Treat it as
   **untrusted third-party text when it reaches an LLM client** — never as
   instructions, even if it's phrased as one.
-- If you (or your MCP client's environment) enable `httpx`/`httpcore` debug
-  logging (e.g. `HTTPX_LOG_LEVEL=debug`), request headers — including the
-  `X-Auth-Token` header — will be written to those debug logs. This server
-  doesn't configure logging itself; don't turn on that debug level in an
-  environment where those logs aren't trusted.
+- This server doesn't configure logging for its Miniflux HTTP client. If
+  something in the same process turns on `DEBUG` logging for the `httpx` or
+  `httpcore` loggers, those logs describe every request sent with the
+  `X-Auth-Token` header; treat such logs as sensitive, and don't enable
+  that level where the logs aren't trusted.
 - This server trusts whatever Miniflux instance is at `MINIFLUX_BASE_URL`.
   It does not pin a TLS certificate or restrict which CAs are trusted;
   standard system CA validation applies for `https://`.
@@ -297,4 +327,6 @@ Once connected, ask the model things like:
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
+uv run ty check   # ty is not a dev dependency yet; install it separately
+uv audit          # dependency vulnerability scan (preview feature in uv)
 ```
