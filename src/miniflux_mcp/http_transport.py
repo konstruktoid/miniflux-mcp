@@ -15,10 +15,12 @@ import logging
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette import status
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.websockets import WebSocketClose
 
 from .config import TransportSettings, is_loopback_host
 
@@ -26,21 +28,32 @@ logger = logging.getLogger(__name__)
 
 
 class BearerTokenMiddleware:
-    """Reject any HTTP request that doesn't carry the configured Miniflux token."""
+    """Reject any HTTP or WebSocket connection that doesn't carry the configured Miniflux token.
+
+    Only the lifespan scope bypasses the check; any other scope type fails closed, so a
+    route added later cannot become reachable without the token.
+    """
 
     def __init__(self, app: ASGIApp, expected_token: str) -> None:
         self._app = app
         self._expected_token = expected_token.encode("utf-8")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] == "lifespan":
             await self._app(scope, receive, send)
             return
 
         if not self._is_authorized(Headers(scope=scope).get("authorization")):
-            logger.warning("Rejected unauthenticated request to %s", scope.get("path"))
-            response = PlainTextResponse("Unauthorized", status_code=401)
-            await response(scope, receive, send)
+            # %r escapes control characters so a crafted path cannot forge extra log lines.
+            logger.warning("Rejected unauthenticated request to %r", scope.get("path"))
+            if scope["type"] == "websocket":
+                await WebSocketClose(code=status.WS_1008_POLICY_VIOLATION)(
+                    scope, receive, send
+                )
+            else:
+                await PlainTextResponse("Unauthorized", status_code=401)(
+                    scope, receive, send
+                )
             return
 
         await self._app(scope, receive, send)

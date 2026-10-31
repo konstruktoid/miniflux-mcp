@@ -1,7 +1,8 @@
 # miniflux-mcp
 
 A minimal, read-only [MCP](https://modelcontextprotocol.io) server for a single
-[Miniflux](https://miniflux.app) instance.
+[Miniflux](https://miniflux.app) instance, targeting Miniflux **2.3.4**
+(the latest release). Older servers are not supported.
 
 Every tool issues exactly one `GET` request to the Miniflux REST API. There is
 no tool, and no code path, that can mark an entry read, refresh a feed, or
@@ -17,18 +18,23 @@ change any setting.
 | `get_feed` | `GET /v1/feeds/{id}` |
 | `list_categories` | `GET /v1/categories` |
 | `get_feed_counters` | `GET /v1/feeds/counters` |
-| `list_entries` | `GET /v1/entries` (status, feed, category, starred, search, order, direction, limit, offset) |
+| `list_entries` | `GET /v1/entries` (status, feed_id, category_id, starred, search, tags, order, direction, limit, offset) |
 | `get_entry` | `GET /v1/entries/{id}` |
 
 All tools are registered with `read_only_hint=True` / `destructive_hint=False`
 MCP annotations so a compliant client can show that up front.
 
+`list_entries` follows the Miniflux 2.3 API: `status` is `unread` or `read`
+(the old `removed` status no longer exists), `tags` matches entries carrying
+the given tags, and `order` also accepts `changed_at` and `created_at`.
+Feeds and entries include the `language` field added in 2.3.3.
+
 ## Environment variables
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MINIFLUX_BASE_URL` | *(required)* | Your Miniflux instance's URL. Plain `http://` only for loopback hosts. |
-| `MINIFLUX_API_TOKEN` | *(required)* | Miniflux API token — used both to call Miniflux and, over `http` transport, as the credential clients must present. |
+| `MINIFLUX_BASE_URL` | *(required)* | Your Miniflux instance's URL. Plain `http://` only for loopback hosts. Falls back to `~/.config/miniflux-mcp/miniflux-mcp.conf` if unset. |
+| `MINIFLUX_API_TOKEN` | *(required)* | Miniflux API token — used both to call Miniflux and, over `http` transport, as the credential clients must present. Falls back to `~/.config/miniflux-mcp/miniflux-mcp.conf` if unset. |
 | `MINIFLUX_MCP_TRANSPORT` | `stdio` | `stdio` (local subprocess, no network listener) or `http` (network-reachable). |
 | `MINIFLUX_MCP_HOST` | `127.0.0.1` | Bind host, `http` transport only. |
 | `MINIFLUX_MCP_PORT` | `8000` | Bind port, `http` transport only. |
@@ -46,27 +52,40 @@ token means revoking it can't break anything else.
 
 Don't `export MINIFLUX_API_TOKEN=...` interactively — on bash/zsh that
 writes the token to your shell history file in plaintext. Instead, put it
-in a `.env` file:
+in `~/.config/miniflux-mcp/miniflux-mcp.conf`:
 
 ```sh
-cd /path/to/miniflux-mcp
-cp .env.example .env
-chmod 600 .env          # owner-read/write only
-$EDITOR .env             # fill in the real token
+mkdir -p ~/.config/miniflux-mcp
+$EDITOR ~/.config/miniflux-mcp/miniflux-mcp.conf
+chmod 600 ~/.config/miniflux-mcp/miniflux-mcp.conf   # owner-read/write only
 ```
 
-`.env` is already in `.gitignore` (`.env.example`, with no real secret in
-it, is explicitly kept). Never commit the real file, and don't paste the
-token into an issue, chat, or log.
+with contents:
 
-If this server runs somewhere with a secrets manager available (Vault,
-`systemd-creds`, your OS keychain, etc.), prefer injecting
-`MINIFLUX_API_TOKEN` from that at process start over a plaintext file.
+```sh
+MINIFLUX_BASE_URL=http://localhost:8080
+MINIFLUX_API_TOKEN=replace-with-a-real-miniflux-api-token
+```
+
+`# comments` and blank lines are allowed. This file lives outside the
+repo, so there's nothing to `.gitignore` here — never copy it into the
+project directory, and don't paste the token into an issue, chat, or log.
+The server refuses to read this file if it's readable by anyone but its
+owner (`ConfigError` naming the exact `chmod` to run), so a `chmod 600`
+mistake fails loudly instead of silently leaking the token to other local
+users.
+
+Either `MINIFLUX_BASE_URL` or `MINIFLUX_API_TOKEN` can instead be set as
+an environment variable, which always takes precedence over the config
+file when both are present. If this server runs somewhere with a secrets
+manager available (Vault, `systemd-creds`, your OS keychain, etc.),
+prefer injecting `MINIFLUX_API_TOKEN` as an environment variable from
+that at process start over the config file.
 
 Whatever the source, the token must only ever reach this process as an
-environment variable — never as a command-line argument to anything
-(arguments are visible to other local users via `ps`), and never inside a
-URL.
+environment variable or via the config file above — never as a
+command-line argument to anything (arguments are visible to other local
+users via `ps`), and never inside a URL.
 
 ## 3. Install and run
 
@@ -74,13 +93,13 @@ Requires [uv](https://docs.astral.sh/uv/).
 
 ```sh
 uv sync
-uv run --env-file .env miniflux-mcp
+uv run miniflux-mcp
 ```
 
 That starts the server speaking MCP over stdio and, with a real token in
-`.env`, is a good sanity check before wiring it into a client — it should
-hang waiting for MCP requests on stdin rather than exit with an error.
-Ctrl-C to stop.
+`~/.config/miniflux-mcp/miniflux-mcp.conf`, is a good sanity check before
+wiring it into a client — it should hang waiting for MCP requests on
+stdin rather than exit with an error. Ctrl-C to stop.
 
 ## 4. Point an MCP client at it
 
@@ -94,12 +113,7 @@ Add to `claude_desktop_config.json` (Claude Desktop) or `.mcp.json`
   "mcpServers": {
     "miniflux": {
       "command": "uv",
-      "args": [
-        "run",
-        "--directory", "/path/to/miniflux-mcp",
-        "--env-file", "/path/to/miniflux-mcp/.env",
-        "miniflux-mcp"
-      ]
+      "args": ["run", "--directory", "/path/to/miniflux-mcp", "miniflux-mcp"]
     }
   }
 }
@@ -108,18 +122,20 @@ Add to `claude_desktop_config.json` (Claude Desktop) or `.mcp.json`
 Equivalently, with the Claude Code CLI:
 
 ```sh
-claude mcp add miniflux -- uv run --directory /path/to/miniflux-mcp --env-file /path/to/miniflux-mcp/.env miniflux-mcp
+claude mcp add miniflux -- uv run --directory /path/to/miniflux-mcp miniflux-mcp
 ```
 
-Either way, the config file itself now contains a path to your token, not
-the token's value — but if you instead inline `MINIFLUX_API_TOKEN` as an
-`env` entry in the client config (some clients only support that), treat
-that config file as a secret too: restrict its permissions the same way
-as `.env`, and never commit it.
+Either way, the client config contains no secret at all — the token
+comes from `~/.config/miniflux-mcp/miniflux-mcp.conf` on whatever machine
+runs the server. If you instead inline `MINIFLUX_API_TOKEN` as an `env`
+entry in the client config (some clients only support that), treat that
+config file as a secret too: restrict its permissions the same way as
+`miniflux-mcp.conf`, and never commit it.
 
 ### Any other MCP client
 
-Run `uv run --directory /path/to/miniflux-mcp --env-file /path/to/miniflux-mcp/.env miniflux-mcp` as the server command, over stdio.
+Run `uv run --directory /path/to/miniflux-mcp miniflux-mcp` as the server
+command, over stdio.
 
 ## 5. Using it from another machine / another Claude instance
 
@@ -129,7 +145,7 @@ client starts directly, with no network listener at all. To let a
 with the `http` transport instead:
 
 ```sh
-MINIFLUX_MCP_TRANSPORT=http uv run --env-file .env miniflux-mcp
+MINIFLUX_MCP_TRANSPORT=http uv run miniflux-mcp
 ```
 
 This binds `127.0.0.1:8000` by default and **requires every request to
@@ -146,7 +162,7 @@ MINIFLUX_MCP_TRANSPORT=http \
 MINIFLUX_MCP_HOST=0.0.0.0 \
 MINIFLUX_MCP_ALLOW_REMOTE=1 \
 MINIFLUX_MCP_PORT=8000 \
-  uv run --env-file .env miniflux-mcp
+  uv run miniflux-mcp
 ```
 
 `MINIFLUX_MCP_ALLOW_REMOTE=1` is a deliberate second step on top of the
@@ -200,17 +216,27 @@ Once connected, ask the model things like:
   `limit=5`
 - "Search my feeds for anything about Rust."
   → `list_entries` with `search=Rust`
+- "Show entries tagged security, newest first by when Miniflux fetched them."
+  → `list_entries` with `tags=["security"]`, `order=created_at`
 - "Get the full text of entry 1370."
   → `get_entry` with `entry_id=1370`
 
 ## Security model
 
 - **The token and host are fixed once per process, never per call.** They
-  come only from `MINIFLUX_BASE_URL` / `MINIFLUX_API_TOKEN`, read once (on
-  first use for stdio, eagerly at startup for `http`, since the bearer
-  check needs it). No tool accepts a URL, host, or token as an argument,
-  so a malicious or confused MCP client cannot redirect requests or
-  exfiltrate the token through a tool call.
+  come only from `MINIFLUX_BASE_URL` / `MINIFLUX_API_TOKEN` (an env var,
+  or the `~/.config/miniflux-mcp/miniflux-mcp.conf` fallback — an env var
+  always wins if both are set), read once (on first use for stdio,
+  eagerly at startup for `http`, since the bearer check needs it). No tool
+  accepts a URL, host, or token as an argument, so a malicious or confused
+  MCP client cannot redirect requests or exfiltrate the token through a
+  tool call.
+- **The config file is refused unless it is a private regular file.** It
+  must be owned by the user running the server and not readable by anyone
+  else; a `chmod` other than `600`/`400` raises a startup error naming the
+  exact command to fix it. A directory, FIFO, or other special file at that
+  path is rejected without blocking, rather than silently loading a token
+  other local users could read or plant.
 - **`http://` is only accepted for loopback hosts** (`localhost`,
   `127.0.0.1`, `::1`). Anything else must use `https://`. Credentials
   embedded in the URL (`http://user:pass@host`) are rejected outright.

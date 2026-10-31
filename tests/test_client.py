@@ -80,3 +80,39 @@ def test_get_json_drops_none_params():
         return httpx.Response(200, json=[])
 
     _client(handler).get_json("/v1/categories", params={"x": 1, "y": None})
+
+
+def test_get_json_sends_list_params_as_repeated_query_keys():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["tags"] = request.url.params.get_list("tags")
+        return httpx.Response(200, json={"total": 0, "entries": []})
+
+    client = MinifluxClient(
+        Settings(base_url="https://reader.example.com", api_token="t"),
+        transport=httpx.MockTransport(handler),
+    )
+    client.get_json("/v1/entries", params={"tags": ["a", "b"]})
+    assert seen["tags"] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("exc_type", "match"),
+    [(httpx.ReadTimeout, "timed out"), (httpx.ConnectError, "Could not reach")],
+)
+def test_get_json_wraps_transport_failures(exc_type, match):
+    def handler(request):
+        raise exc_type("boom", request=request)
+
+    with pytest.raises(MinifluxError, match=match) as excinfo:
+        _client(handler).get_json("/v1/me")
+    assert "test-token" not in str(excinfo.value)
+
+
+def test_get_json_rejects_non_json_body():
+    def handler(_request):
+        return httpx.Response(200, text="<html>not json</html>")
+
+    with pytest.raises(MinifluxError, match="non-JSON"):
+        _client(handler).get_json("/v1/me")

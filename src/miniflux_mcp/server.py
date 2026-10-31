@@ -35,9 +35,23 @@ CategoryId = Annotated[int, Field(ge=1, description="Miniflux category ID")]
 Limit = Annotated[int, Field(ge=1, le=250, description="Max number of results")]
 Offset = Annotated[int, Field(ge=0, le=1_000_000, description="Pagination offset")]
 SearchTerm = Annotated[str, Field(max_length=200, description="Free-text search term")]
-EntryStatus = Literal["unread", "read", "removed"]
+Tag = Annotated[str, Field(min_length=1, max_length=100, description="Entry tag")]
+Tags = Annotated[
+    list[Tag],
+    Field(min_length=1, max_length=20, description="Match entries with these tags"),
+]
+# Miniflux 2.3.0 dropped the "removed" status; the API now rejects it with 400.
+EntryStatus = Literal["unread", "read"]
 EntryOrder = Literal[
-    "id", "status", "published_at", "category_title", "category_id", "title", "author"
+    "id",
+    "status",
+    "changed_at",
+    "published_at",
+    "created_at",
+    "category_title",
+    "category_id",
+    "title",
+    "author",
 ]
 SortDirection = Literal["asc", "desc"]
 
@@ -105,18 +119,20 @@ def list_entries(
     category_id: CategoryId | None = None,
     starred: bool | None = None,
     search: SearchTerm | None = None,
+    tags: Tags | None = None,
     order: EntryOrder = "published_at",
     direction: SortDirection = "desc",
     limit: Limit = 20,
     offset: Offset = 0,
 ) -> Any:
-    """List entries, optionally filtered by status, feed, category, or search text."""
+    """List entries, optionally filtered by status, feed, category, tags, or search text."""
     params = {
         "status": status,
         "feed_id": feed_id,
         "category_id": category_id,
         "starred": starred,
         "search": search,
+        "tags": tags,
         "order": order,
         "direction": direction,
         "limit": limit,

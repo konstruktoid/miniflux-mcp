@@ -1,15 +1,21 @@
-"""Runtime configuration, loaded once from environment variables.
+"""Runtime configuration, loaded once from environment variables or a config file.
 
 The API token and base URL are read here and only here. No tool accepts
 either as an argument, so a malicious or buggy MCP client cannot redirect
 requests to a different host or exfiltrate the token through a tool call.
+
+MINIFLUX_BASE_URL and MINIFLUX_API_TOKEN can each come from an environment
+variable or from a KEY=VALUE fallback file (see config_file_path()); an
+env var always wins when both are set.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import os
+import stat
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -17,6 +23,7 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 8000
+CONFIG_FILE_RELATIVE_PATH = Path("miniflux-mcp") / "miniflux-mcp.conf"
 
 Transport = Literal["stdio", "http"]
 
@@ -60,14 +67,92 @@ def _validate_base_url(raw: str) -> str:
     return f"{parts.scheme}://{parts.netloc}{parts.path}".rstrip("/")
 
 
+def config_file_path() -> Path:
+    """Where the fallback KEY=VALUE config file lives, honoring XDG_CONFIG_HOME."""
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    config_home = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
+    return config_home / CONFIG_FILE_RELATIVE_PATH
+
+
+def _parse_conf_file(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def _read_config_file(path: Path) -> dict[str, str]:
+    """Read the optional fallback config file, refusing anything but a private regular file.
+
+    Checks type, owner, and permissions on the same open file descriptor used
+    for the read, so there is no window between the check and the read where
+    the path could be swapped for a different file (TOCTOU). O_NONBLOCK keeps
+    a FIFO planted at the path from hanging startup before it can be
+    rejected. Env vars still take precedence in load_settings(), so a secrets
+    manager injecting MINIFLUX_API_TOKEN at process start continues to work
+    unchanged; this file only fills in whatever an env var didn't supply.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ConfigError(f"Could not open {path}: {exc.strerror}") from exc
+
+    try:
+        _check_config_file(path, os.fstat(fd))
+        handle = os.fdopen(fd, encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+    with handle:
+        return _parse_conf_file(handle.read())
+
+
+def _check_config_file(path: Path, info: os.stat_result) -> None:
+    if not stat.S_ISREG(info.st_mode):
+        raise ConfigError(f"{path} is not a regular file")
+    if os.name != "posix":
+        return
+    if info.st_uid != os.getuid():
+        raise ConfigError(f"{path} is not owned by the user running this server")
+    if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise ConfigError(
+            f"{path} is readable by users other than its owner; "
+            f"run `chmod 600 {path}` before storing a token in it"
+        )
+
+
 def load_settings() -> Settings:
-    base_url = os.environ.get("MINIFLUX_BASE_URL", "").strip()
-    api_token = os.environ.get("MINIFLUX_API_TOKEN", "").strip()
+    path = config_file_path()
+    file_values = _read_config_file(path)
+
+    def _get(name: str) -> str:
+        return os.environ.get(name, "").strip() or file_values.get(name, "").strip()
+
+    base_url = _get("MINIFLUX_BASE_URL")
+    api_token = _get("MINIFLUX_API_TOKEN")
 
     if not base_url:
-        raise ConfigError("MINIFLUX_BASE_URL environment variable is required")
+        raise ConfigError(
+            f"MINIFLUX_BASE_URL is required: set it as an environment variable "
+            f"or in {path}"
+        )
     if not api_token:
-        raise ConfigError("MINIFLUX_API_TOKEN environment variable is required")
+        raise ConfigError(
+            f"MINIFLUX_API_TOKEN is required: set it as an environment variable "
+            f"or in {path}"
+        )
 
     return Settings(base_url=_validate_base_url(base_url), api_token=api_token)
 
