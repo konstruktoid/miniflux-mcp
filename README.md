@@ -21,8 +21,9 @@ change any setting.
 | `list_entries` | `GET /v1/entries` (status, feed_id, category_id, starred, search, tags, order, direction, limit, offset) |
 | `get_entry` | `GET /v1/entries/{id}` |
 
-All tools are registered with `read_only_hint=True` / `destructive_hint=False`
-MCP annotations so a compliant client can show that up front.
+All tools are registered with `read_only_hint=True`, `destructive_hint=False`,
+`idempotent_hint=True`, and `open_world_hint=False` MCP annotations so a
+compliant client can show that up front.
 
 `list_entries` follows the Miniflux 2.3 API: `status` is `unread` or `read`
 (the old `removed` status no longer exists); `tags` takes 1–20 tags and
@@ -78,15 +79,18 @@ stripped; lines without `=` and unknown keys are ignored. This file lives
 outside the repo, so there's nothing to `.gitignore` here — never copy it
 into the project directory, and don't paste the token into an issue, chat,
 or log. The server refuses to read this file unless it is a regular file
-owned by the user running the server with no group or other permission
-bits (`ConfigError` naming the exact `chmod` to run), so a permissions
-mistake fails loudly instead of silently leaking the token to other local
-users.
+and, on Linux/macOS, owned by the user running the server with no group
+or other permission bits (`ConfigError` naming the exact `chmod` to run),
+so a permissions mistake fails loudly instead of silently leaking the
+token to other local users. On Windows only the regular-file check
+applies.
 
 Either `MINIFLUX_BASE_URL` or `MINIFLUX_API_TOKEN` can instead be set as
 an environment variable, which always takes precedence over the config
-file when both are present. If this server runs somewhere with a secrets
-manager available (Vault, `systemd-creds`, your OS keychain, etc.),
+file when both are present. A variable that is set but empty (or only
+whitespace) counts as unset, so the config file value is used. If this
+server runs somewhere with a secrets manager available (Vault,
+`systemd-creds`, your OS keychain, etc.),
 prefer injecting `MINIFLUX_API_TOKEN` as an environment variable from
 that at process start over the config file.
 
@@ -256,9 +260,10 @@ Once connected, ask the model things like:
   accepts a URL, host, or token as an argument, so a malicious or confused
   MCP client cannot redirect requests or exfiltrate the token through a
   tool call.
-- **The config file is refused unless it is a private regular file.** It
-  must be owned by the user running the server and have no group or other
-  permission bits (for example `600` or `400`); anything else raises a
+- **The config file is refused unless it is a private regular file.** On
+  POSIX systems it must be owned by the user running the server and have
+  no group or other permission bits (for example `600` or `400`); anything
+  else raises a
   `ConfigError` naming the exact command to fix it. A directory, FIFO, or
   other special file at that path is rejected without blocking, rather
   than silently loading a token
@@ -327,6 +332,16 @@ Once connected, ask the model things like:
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
-uv run ty check   # ty is not a dev dependency yet; install it separately
+uv run ty check   # type check
 uv audit          # dependency vulnerability scan (preview feature in uv)
 ```
+
+CI (`.github/workflows/ci.yml`) runs the tests, ruff, and ty on every pull
+request and on pushes to `main`; CodeQL code scanning runs alongside it.
+`main` only accepts signed commits through a pull request, and Dependabot
+proposes weekly grouped updates for uv and GitHub Actions dependencies.
+
+## Reporting a vulnerability
+
+See [SECURITY.md](SECURITY.md). Use GitHub private vulnerability
+reporting, not a public issue.
