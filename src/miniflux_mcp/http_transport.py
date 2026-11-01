@@ -65,6 +65,11 @@ class BearerTokenMiddleware:
         return hmac.compare_digest(presented, self._expected_token)
 
 
+def _host_header(host: str, port: int) -> str:
+    """Format host and port as a client sends them in the Host header, bracketing IPv6 literals."""
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
 def transport_security_for(host: str, port: int) -> TransportSecuritySettings:
     """Decide Host-header allowlisting for a given bind address.
 
@@ -78,7 +83,7 @@ def transport_security_for(host: str, port: int) -> TransportSecuritySettings:
         )
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
-        allowed_hosts=[f"{host}:{port}", f"localhost:{port}"],
+        allowed_hosts=[_host_header(host, port), f"localhost:{port}"],
         allowed_origins=[],
     )
 

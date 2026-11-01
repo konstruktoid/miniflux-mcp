@@ -74,11 +74,19 @@ def test_correct_token_reaches_the_app():
     assert response.text == "ok"
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "localhost", "::1"])
-def test_transport_security_enables_dns_rebinding_protection_on_loopback(host):
+@pytest.mark.parametrize(
+    ("host", "header"),
+    [
+        ("127.0.0.1", "127.0.0.1:8000"),
+        ("127.0.0.2", "127.0.0.2:8000"),
+        ("localhost", "localhost:8000"),
+        ("::1", "[::1]:8000"),
+    ],
+)
+def test_transport_security_enables_dns_rebinding_protection_on_loopback(host, header):
     security = transport_security_for(host, 8000)
     assert security.enable_dns_rebinding_protection is True
-    assert f"{host}:8000" in security.allowed_hosts
+    assert header in security.allowed_hosts
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "203.0.113.1"])
