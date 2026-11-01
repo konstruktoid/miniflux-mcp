@@ -1,16 +1,51 @@
-.venv/
+# Python bytecode and build output
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-htmlcov/
 build/
 dist/
 *.egg-info/
+.eggs/
+wheels/
+
+# Virtual environments (uv.lock and .python-version are tracked on purpose)
+.venv/
+venv/
+
+# Test, coverage, lint, and type-checker caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Secrets and credentials: never commit a Miniflux token or key material
 .env
 .env.*
-.DS_Store
+.envrc
+.netrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+miniflux-mcp.conf
+*.conf.local
+secrets/
+
+# Logs can capture X-Auth-Token headers when httpx debug logging is on
+*.log
+
+# Claude Code per-user local files (shared .claude/settings.json stays trackable)
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Editor and OS files
 .idea/
 .vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
