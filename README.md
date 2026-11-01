@@ -260,14 +260,15 @@ Once connected, ask the model things like:
   accepts a URL, host, or token as an argument, so a malicious or confused
   MCP client cannot redirect requests or exfiltrate the token through a
   tool call.
-- **The config file is refused unless it is a private regular file.** On
-  POSIX systems it must be owned by the user running the server and have
-  no group or other permission bits (for example `600` or `400`); anything
-  else raises a
-  `ConfigError` naming the exact command to fix it. A directory, FIFO, or
-  other special file at that path is rejected without blocking, rather
-  than silently loading a token
-  other local users could read or plant.
+- **On POSIX systems the config file is refused unless it is a private
+  regular file.** It must be owned by the user running the server and
+  have no group or other permission bits (for example `600` or `400`);
+  anything else raises a `ConfigError` naming the exact command to fix it.
+  On every platform, a directory, FIFO, or other special file at that path
+  is rejected without blocking, rather than silently loading a token
+  other local users could read or plant. **On Windows the file's ACL is
+  not checked**: restrict access to your own account yourself (for
+  example with `icacls`) before storing a token in it.
 - **`http://` is only accepted for loopback hosts** (`localhost`,
   `127.0.0.1`, `::1`). Anything else must use `https://`. Credentials
   embedded in the URL (`http://user:pass@host`) are rejected outright.

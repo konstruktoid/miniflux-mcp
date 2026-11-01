@@ -14,7 +14,8 @@ You can expect an acknowledgement within 7 days. Fixes are released from `main`;
 ## What this server can access
 
 - It talks to exactly one Miniflux instance, set by `MINIFLUX_BASE_URL`, using the API token in
-  `MINIFLUX_API_TOKEN` or the private config file `~/.config/miniflux-mcp/miniflux-mcp.conf`.
+  `MINIFLUX_API_TOKEN` or the private config file `~/.config/miniflux-mcp/miniflux-mcp.conf`
+  (`$XDG_CONFIG_HOME/miniflux-mcp/miniflux-mcp.conf` when `XDG_CONFIG_HOME` is set).
 - Every tool issues HTTP `GET` requests only. No tool can mark entries read, refresh feeds, or change settings.
 - The token carries the full permissions of the Miniflux user who issued it. The server cannot narrow them; use a
   dedicated Miniflux user if you need a smaller scope.
